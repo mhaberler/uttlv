@@ -37,7 +37,7 @@ class TLV:
     Config = enum.Enum("Config", "Type Name")
     _global_tag_map = {}
 
-    def __init__(self, indent=4, tag_size=1, len_size=None, endian="big"):
+    def __init__(self, indent=4, tag_size=1, len_size=None, endian="big", ltv=False, lenTV=False):
         """
         :args:
             indent: How many spaces to use in tree() method
@@ -45,6 +45,8 @@ class TLV:
             len_size: How many bytes the length info will occupy in the final
                         array, None (default) for automatically determine per
                         field
+            ltv: order is length-type, not type-length
+            lenTV: lengh field includes length of tag if True
         """
         super().__init__()
         self.indent = indent
@@ -53,6 +55,8 @@ class TLV:
         self.endian = endian
         self._items = {}
         self._local_tag_map = None
+        self.ltv = ltv
+        self.lenTV = lenTV
 
     @property
     def tag_map(self) -> Dict:
@@ -187,8 +191,10 @@ class TLV:
                 f"{value} takes up {required_len_size} bytes, "
                 f"but len_size was defined as {self.len_size}"
             )
-
-        return len(value).to_bytes(self.len_size, byteorder=self.endian)
+        if self.lenTV:
+            return (len(value) + self.tag_size).to_bytes(self.len_size, byteorder=self.endian)
+        else:
+            return len(value).to_bytes(self.len_size, byteorder=self.endian)
 
     def to_byte_array(self) -> bytes:
         """Translate all keys and values into an array of bytes."""
@@ -197,8 +203,12 @@ class TLV:
             formatter = ALLOWED_TYPES.get(type(value))
             formatted_value = formatter().default(value)
             # Create array
-            data += int(tag).to_bytes(self.tag_size, byteorder=self.endian)
-            data += self.encode_length(formatted_value)
+            if self.ltv:
+                data += self.encode_length(formatted_value)                
+                data += int(tag).to_bytes(self.tag_size, byteorder=self.endian)
+            else:
+                data += int(tag).to_bytes(self.tag_size, byteorder=self.endian)
+                data += self.encode_length(formatted_value)
             data += formatted_value
         return data
 
@@ -239,15 +249,26 @@ class TLV:
         # Start parsing
         aux = data
         while len(aux) > min_size:
-            # Tag value
-            tag = int.from_bytes(aux[: self.tag_size], byteorder=self.endian)
-            # Len value
-            aux = aux[self.tag_size :]
-            len_size = self.len_size or self.decode_len_size(aux)
-            offset = 0 if len_size == 1 else 1
-            length = int.from_bytes(aux[offset:len_size], byteorder=self.endian)
+            if self.ltv:
+                # Len value
+                len_size = self.len_size or self.decode_len_size(aux)
+                length = int.from_bytes(aux[: len_size], byteorder=self.endian) 
+                # Tag value
+                aux = aux[len_size :]
+                tag = int.from_bytes(aux[: self.tag_size], byteorder=self.endian) 
+                aux = aux[self.tag_size:]
+                if self.lenTV:
+                    length -= self.tag_size
+            else:
+                # Tag value
+                tag = int.from_bytes(aux[: self.tag_size], byteorder=self.endian) 
+                # Len value
+                aux = aux[self.tag_size :]
+                len_size = self.len_size or self.decode_len_size(aux)
+                offset = 0 if len_size == 1 else 1
+                length = int.from_bytes(aux[offset:len_size], byteorder=self.endian)
+                aux = aux[len_size:]
             # Value
-            aux = aux[len_size:]
             value = aux[:length]
             # Next value
             aux = aux[length:]
